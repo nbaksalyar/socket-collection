@@ -1,4 +1,3 @@
-use {Handle, SocketError, Priority, MAX_MSG_AGE_SECS, MAX_PAYLOAD_SIZE, MSG_DROP_PRIORITY};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use libudt4_sys::{EASYNCRCV, EASYNCSND};
 use maidsafe_utilities::serialisation::{deserialise_from, serialise_into};
@@ -8,10 +7,11 @@ use serde::ser::Serialize;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Debug;
 use std::io::{self, Cursor, ErrorKind, Read, Write};
-use std::{self, mem};
 use std::net::SocketAddr;
 use std::time::Instant;
+use std::{self, mem};
 use udt_extern::{SocketFamily, SocketType, UdtOpts, UdtSocket};
+use {Handle, Priority, SocketError, MAX_MSG_AGE_SECS, MAX_PAYLOAD_SIZE, MSG_DROP_PRIORITY};
 
 pub struct UdtSock {
     inner: Option<Inner>,
@@ -20,6 +20,10 @@ pub struct UdtSock {
 impl UdtSock {
     pub fn wrap_std_sock(udp_sock: std::net::UdpSocket, handle: Handle) -> ::Res<Self> {
         let stream = UdtSocket::new(SocketFamily::AFInet, SocketType::Stream)?;
+
+        trace!("UDP_SNDBUF and UDP_RCVBUF.. {}", 1024000);
+        stream.setsockopt(UdtOpts::UDP_SNDBUF, 1024000)?;
+        stream.setsockopt(UdtOpts::UDP_RCVBUF, 1024000)?;
 
         trace!("UDT_RCVSYN false..");
         // Make connect and reads non-blocking
@@ -359,7 +363,9 @@ impl Evented for Inner {
         interest: Ready,
         _opts: PollOpt,
     ) -> io::Result<()> {
-        Ok(self.handle.register(self.stream, token, interest)
+        Ok(self
+            .handle
+            .register(self.stream, token, interest)
             .map_err(|e| into_io_error(Some(e), ""))?)
     }
 
@@ -374,7 +380,9 @@ impl Evented for Inner {
     }
 
     fn deregister(&self, _poll: &Poll) -> io::Result<()> {
-        Ok(self.handle.deregister(self.stream)
+        Ok(self
+            .handle
+            .deregister(self.stream)
             .map_err(|e| into_io_error(Some(e), ""))?)
     }
 }
@@ -395,11 +403,7 @@ fn into_io_error<E: Debug>(e: Option<E>, m: &str) -> io::Error {
     };
     // FIXME: do better
     let opt_details = format!(";; [Optional details: {}]", m);
-    err_msg.push_str(if m.is_empty() {
-        ""
-    } else {
-        &opt_details
-    });
+    err_msg.push_str(if m.is_empty() { "" } else { &opt_details });
 
     io::Error::new(ErrorKind::Other, err_msg)
 }
