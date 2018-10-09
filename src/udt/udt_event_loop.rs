@@ -32,6 +32,7 @@ impl EpollLoop {
 
         let j = thread::named("UDT Event Loop", move || {
             event_loop_impl(epoll, notifier, queued_actions);
+            debug!("Gracefully shut down udt epoll event loop");
         });
 
         Ok(EpollLoop {
