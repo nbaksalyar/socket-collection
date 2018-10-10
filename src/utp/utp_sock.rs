@@ -1,4 +1,3 @@
-use {Handle, SocketError, Priority, MAX_MSG_AGE_SECS, MAX_PAYLOAD_SIZE, MSG_DROP_PRIORITY};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use libudt4_sys::{EASYNCRCV, EASYNCSND};
 use maidsafe_utilities::serialisation::{deserialise_from, serialise_into};
@@ -8,37 +7,24 @@ use serde::ser::Serialize;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Debug;
 use std::io::{self, Cursor, ErrorKind, Read, Write};
-use std::{self, mem};
 use std::net::SocketAddr;
 use std::time::Instant;
-use udt_extern::{SocketFamily, SocketType, UdtOpts, UdtSocket};
+use std::{self, mem};
+use udt_extern::{SocketFamily, SocketType, UdtOpts, UtpSocket};
+use {Handle, Priority, SocketError, MAX_MSG_AGE_SECS, MAX_PAYLOAD_SIZE, MSG_DROP_PRIORITY};
 
 const UDP_SNDBUF_SIZE: i32 = 512 * 1024;
 const UDP_RCVBUF_SIZE: i32 = 512 * 1024;
 
-pub struct UdtSock {
+pub struct UtpSock {
     inner: Option<Inner>,
 }
 
-impl UdtSock {
+impl UtpSock {
     pub fn wrap_std_sock(udp_sock: std::net::UdpSocket, handle: Handle) -> ::Res<Self> {
-        let stream = UdtSocket::new(SocketFamily::AFInet, SocketType::Stream)?;
+        let stream = UtpSocket::new(SocketFamily::AFInet, SocketType::Stream)?;
 
-        // Since we are supplying the UDP socket we don't want the UDT to make assumptions about it
-        // as the default at the time of this comment was 1MiB
-        stream.setsockopt(UdtOpts::UDP_SNDBUF, UDP_SNDBUF_SIZE)?;
-        stream.setsockopt(UdtOpts::UDP_RCVBUF, UDP_RCVBUF_SIZE)?;
-        // Make connect and reads non-blocking
-        stream.setsockopt(UdtOpts::UDT_RCVSYN, false)?;
-        // Make writes non-blocking
-        stream.setsockopt(UdtOpts::UDT_SNDSYN, false)?;
-        // Enable rendezvous mode for simultaneous connect. This is necessary to bind an existing
-        // UDP socket
-        stream.setsockopt(UdtOpts::UDT_RENDEZVOUS, true)?;
-
-        stream.bind_from(udp_sock)?;
-
-        Ok(UdtSock {
+        Ok(UtpSock {
             inner: Some(Inner {
                 stream,
                 handle,
@@ -51,7 +37,7 @@ impl UdtSock {
     }
 
     pub fn wrap_mio_sock(udp_sock: mio::net::UdpSocket, handle: Handle) -> ::Res<Self> {
-        UdtSock::wrap_std_sock(mio_to_std_udp_sock(udp_sock), handle)
+        UtpSock::wrap_std_sock(mio_to_std_udp_sock(udp_sock), handle)
     }
 
     pub fn connect(&self, addr: &SocketAddr) -> ::Res<()> {
@@ -116,13 +102,13 @@ impl UdtSock {
     }
 }
 
-impl Default for UdtSock {
+impl Default for UtpSock {
     fn default() -> Self {
-        UdtSock { inner: None }
+        UtpSock { inner: None }
     }
 }
 
-impl Evented for UdtSock {
+impl Evented for UtpSock {
     fn register(
         &self,
         poll: &Poll,
@@ -167,7 +153,7 @@ impl Evented for UdtSock {
 }
 
 struct Inner {
-    stream: UdtSocket,
+    stream: UtpSocket,
     handle: Handle,
     read_buffer: Vec<u8>,
     read_len: usize,
@@ -292,6 +278,7 @@ impl Inner {
         }
 
         if let Some((msg, priority)) = msg {
+            // Write to UTP socket
             let mut data = Cursor::new(Vec::with_capacity(mem::size_of::<u32>()));
 
             let _ = data.write_u32::<LittleEndian>(0);
@@ -307,6 +294,8 @@ impl Inner {
                 .entry(priority)
                 .or_insert_with(|| VecDeque::with_capacity(10));
             entry.push_back((Instant::now(), data.into_inner()));
+        } else {
+            // Write to UDP socket
         }
 
         if self.current_write.is_none() {
@@ -360,7 +349,9 @@ impl Evented for Inner {
         interest: Ready,
         _opts: PollOpt,
     ) -> io::Result<()> {
-        Ok(self.handle.register(self.stream, token, interest)
+        Ok(self
+            .handle
+            .register(self.stream, token, interest)
             .map_err(|e| into_io_error(Some(e), ""))?)
     }
 
@@ -375,7 +366,9 @@ impl Evented for Inner {
     }
 
     fn deregister(&self, _poll: &Poll) -> io::Result<()> {
-        Ok(self.handle.deregister(self.stream)
+        Ok(self
+            .handle
+            .deregister(self.stream)
             .map_err(|e| into_io_error(Some(e), ""))?)
     }
 }
@@ -396,11 +389,7 @@ fn into_io_error<E: Debug>(e: Option<E>, m: &str) -> io::Error {
     };
     // FIXME: do better
     let opt_details = format!(";; [Optional details: {}]", m);
-    err_msg.push_str(if m.is_empty() {
-        ""
-    } else {
-        &opt_details
-    });
+    err_msg.push_str(if m.is_empty() { "" } else { &opt_details });
 
     io::Error::new(ErrorKind::Other, err_msg)
 }
