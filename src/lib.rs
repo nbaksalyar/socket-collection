@@ -16,15 +16,13 @@ extern crate serde_derive;
 extern crate unwrap;
 
 extern crate byteorder;
-extern crate libudt4_sys;
 extern crate maidsafe_utilities;
 extern crate mio;
 extern crate serde;
-extern crate utp;
+extern crate utp as libutp;
 
 pub use error::SocketError;
 pub use tcp_sock::TcpSock;
-pub use utp::{EpollLoop, Handle, Notifier, UtpSock};
 
 mod error;
 mod tcp_sock;

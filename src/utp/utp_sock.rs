@@ -1,6 +1,7 @@
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use libudt4_sys::{EASYNCRCV, EASYNCSND};
+use libutp::*;
 use maidsafe_utilities::serialisation::{deserialise_from, serialise_into};
+use mio::net::UdpSocket;
 use mio::{self, Evented, Poll, PollOpt, Ready, Token};
 use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
@@ -10,8 +11,7 @@ use std::io::{self, Cursor, ErrorKind, Read, Write};
 use std::net::SocketAddr;
 use std::time::Instant;
 use std::{self, mem};
-use udt_extern::{SocketFamily, SocketType, UdtOpts, UtpSocket};
-use {Handle, Priority, SocketError, MAX_MSG_AGE_SECS, MAX_PAYLOAD_SIZE, MSG_DROP_PRIORITY};
+use {Priority, SocketError, MAX_MSG_AGE_SECS, MAX_PAYLOAD_SIZE, MSG_DROP_PRIORITY};
 
 const UDP_SNDBUF_SIZE: i32 = 512 * 1024;
 const UDP_RCVBUF_SIZE: i32 = 512 * 1024;
@@ -21,13 +21,14 @@ pub struct UtpSock {
 }
 
 impl UtpSock {
-    pub fn wrap_std_sock(udp_sock: std::net::UdpSocket, handle: Handle) -> ::Res<Self> {
-        let stream = UtpSocket::new(SocketFamily::AFInet, SocketType::Stream)?;
+    pub fn wrap_mio_sock(udp_sock: mio::net::UdpSocket, utp_context: UtpContext) -> ::Res<Self> {
+        // let socket = UtpSocket::new()?;
 
         Ok(UtpSock {
             inner: Some(Inner {
-                stream,
-                handle,
+                // socket,
+                udp_sock,
+                utp_context,
                 read_buffer: Vec::new(),
                 read_len: 0,
                 write_queue: BTreeMap::new(),
@@ -36,16 +37,12 @@ impl UtpSock {
         })
     }
 
-    pub fn wrap_mio_sock(udp_sock: mio::net::UdpSocket, handle: Handle) -> ::Res<Self> {
-        UtpSock::wrap_std_sock(mio_to_std_udp_sock(udp_sock), handle)
-    }
-
     pub fn connect(&self, addr: &SocketAddr) -> ::Res<()> {
         let inner = self
             .inner
             .as_ref()
             .ok_or(SocketError::UninitialisedSocket)?;
-        Ok(inner.stream.connect(*addr)?)
+        Ok(inner.udp_sock.connect(*addr)?)
     }
 
     pub fn peer_addr(&self) -> ::Res<SocketAddr> {
@@ -53,7 +50,7 @@ impl UtpSock {
             .inner
             .as_ref()
             .ok_or(SocketError::UninitialisedSocket)?;
-        Ok(inner.stream.getpeername()?)
+        Ok(inner.udp_sock.getpeername()?)
     }
 
     pub fn take_error(&self) -> ::Res<Option<io::Error>> {
@@ -153,8 +150,9 @@ impl Evented for UtpSock {
 }
 
 struct Inner {
-    stream: UtpSocket,
-    handle: Handle,
+    udp_sock: UdpSocket,
+    // socket: UtpSocket,
+    utp_context: UtpContext,
     read_buffer: Vec<u8>,
     read_len: usize,
     write_queue: BTreeMap<Priority, VecDeque<(Instant, Vec<u8>)>>,
@@ -180,7 +178,7 @@ impl Inner {
         let mut is_something_read = false;
 
         loop {
-            match self.stream.recv(&mut buffer, BUF_LEN) {
+            match self.udp_sock.recv(&mut buffer, BUF_LEN) {
                 Ok(bytes_read) => {
                     let bytes_read = bytes_read as usize;
                     if bytes_read == 0 {
@@ -198,6 +196,7 @@ impl Inner {
                     is_something_read = true;
                 }
                 Err(error) => {
+                    /*
                     return if error.err_code == EASYNCRCV {
                         if is_something_read {
                             self.read_from_buffer()
@@ -207,6 +206,8 @@ impl Inner {
                     } else {
                         Err(From::from(error))
                     }
+                     */
+                    Err(From::from(error))
                 }
             }
         }
@@ -310,7 +311,7 @@ impl Inner {
         }
 
         if let Some(data) = self.current_write.take() {
-            match self.stream.send(&data) {
+            match self.udp_sock.send(&data) {
                 Ok(bytes_txd) => {
                     let bytes_txd = bytes_txd as usize;
                     if bytes_txd < data.len() {
@@ -351,7 +352,7 @@ impl Evented for Inner {
     ) -> io::Result<()> {
         Ok(self
             .handle
-            .register(self.stream, token, interest)
+            .register(self.udp_sock, token, interest)
             .map_err(|e| into_io_error(Some(e), ""))?)
     }
 
@@ -368,14 +369,14 @@ impl Evented for Inner {
     fn deregister(&self, _poll: &Poll) -> io::Result<()> {
         Ok(self
             .handle
-            .deregister(self.stream)
+            .deregister(self.udp_sock)
             .map_err(|e| into_io_error(Some(e), ""))?)
     }
 }
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        if let Err(e) = self.stream.close() {
+        if let Err(e) = self.udp_sock.close() {
             debug!("Error closing UDT socket: {:?}", e);
         }
     }
