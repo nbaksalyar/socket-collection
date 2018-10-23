@@ -1,6 +1,7 @@
 use maidsafe_utilities::serialisation::SerialisationError;
 use mio::timer::TimerError;
 use std::io;
+#[cfg(features = "protocol-udt")]
 use udt_extern::UdtError;
 
 quick_error! {
@@ -41,12 +42,12 @@ quick_error! {
         ZeroByteRead {
             description("Read zero bytes from the socket - indicates EOF")
         }
-        /// UDT error
-        Udt(e: UdtError) {
-            description(&e.err_msg)
-            display("Udt error: {}", e.err_msg)
-            from()
-        }
+        // /// UDT error
+        // Udt(e: UdtError) {
+        //     description(&e.err_msg)
+        //     display("Udt error: {}", e.err_msg)
+        //     from()
+        // }
         /// UDP Socket is not connected
         UnconnectedUdpSocket {
             description("UDP Socket is not connected")
